@@ -12,7 +12,7 @@
 -- Portability :  portable
 --
 -----------------------------------------------------------------------------
-module Codec.Archive.Tar.Read (read, FormatError(..)) where
+module Codec.Archive.Tar.Read (read, read', FormatError(..)) where
 
 import Codec.Archive.Tar.Types
 
@@ -29,7 +29,6 @@ import qualified Data.ByteString        as BS
 import qualified Data.ByteString.Char8  as BS.Char8
 import qualified Data.ByteString.Unsafe as BS
 import qualified Data.ByteString.Lazy   as LBS
-
 import Prelude hiding (read)
 
 -- | Errors that can be encountered when parsing a Tar archive.
@@ -68,7 +67,7 @@ read = unfoldEntries getEntry
 
 getEntry :: LBS.ByteString -> Either FormatError (Maybe (Entry, LBS.ByteString))
 getEntry bs
-  | BS.length header < 512 = Left TruncatedArchive
+  | BS.length (headerFrom bs) < 512 = Left TruncatedArchive
 
   -- Tar files end with at least two blocks of all '0'. Checking this serves
   -- two purposes. It checks the format but also forces the tail of the data
@@ -79,9 +78,35 @@ getEntry bs
         | not (LBS.all (== 0) end)      -> Left BadTrailer
         | not (LBS.all (== 0) trailing) -> Left TrailingJunk
         | otherwise                     -> Right Nothing
+  | otherwise  = readTarEntry False bs
 
-  | otherwise  = partial $ do
+-- | Like @read, but it does not throw 'BadTrailer', and 'TrailingJunk' error.
+-- 
+-- This is for scenarios in which tar entry's name attribute may be completely empty.
+-- Although this case is unlikely, it does occur in practice. 
+--
+-- Refer to more details here:
+--  https://github.com/haskell/tar/issues/73
+-- 
+-- * The conversion is done lazily.
+--
+read' :: LBS.ByteString -> Entries FormatError
+read' = unfoldEntries getEntry'
 
+getEntry' :: LBS.ByteString -> Either FormatError (Maybe (Entry, LBS.ByteString))
+getEntry' bs
+  | BS.length (headerFrom bs) < 512 = Left TruncatedArchive
+  | LBS.head bs == 0 = case LBS.splitAt 1024 bs of
+      (end, trailing)
+        | LBS.length end /= 1024                                -> Left ShortTrailer
+        | (LBS.all (== 0) end && LBS.all (== 0) trailing)       -> Right Nothing
+        | otherwise                                             -> readTarEntry ignoresPaxHeader bs
+  | otherwise  = readTarEntry ignoresPaxHeader bs
+  where
+    ignoresPaxHeader = True
+
+readTarEntry :: Bool -> LBS.ByteString -> Either FormatError (Maybe (Entry, LBS.ByteString))
+readTarEntry ignorePax bs = partial $ do
   case (chksum_, format_) of
     (Ok chksum, _   ) | correctChecksum header chksum -> return ()
     (Ok _,      Ok _) -> Error ChecksumIncorrect
@@ -97,55 +122,98 @@ getEntry bs
       padding = (512 - size) `mod` 512
       bs'     = LBS.drop (512 + size + padding) bs
 
-      entry = Entry {
-        entryTarPath     = TarPath name prefix,
-        entryContent     = case typecode of
-                   '\0' -> NormalFile      content size
-                   '0'  -> NormalFile      content size
-                   '1'  -> HardLink        (LinkTarget linkname)
-                   '2'  -> SymbolicLink    (LinkTarget linkname)
-                   _ | format == V7Format
-                        -> OtherEntryType  typecode content size
-                   '3'  -> CharacterDevice devmajor devminor
-                   '4'  -> BlockDevice     devmajor devminor
-                   '5'  -> Directory
-                   '6'  -> NamedPipe
-                   '7'  -> NormalFile      content size
-                   _    -> OtherEntryType  typecode content size,
-        entryPermissions = mode,
-        entryOwnership   = Ownership (BS.Char8.unpack uname)
-                                     (BS.Char8.unpack gname) uid gid,
-        entryTime        = mtime,
-        entryFormat      = format
-    }
-
-  return (Just (entry, bs'))
-
+  --  PAX formatted tar extends USTAR format by including
+  --  additional TarEntry in front of USTAR TarEntry. It
+  --  follows following structure:
+  -- 
+  -- ┌──────────────────────────────┬───────────────────┐
+  -- │  TARFILE BLOCKS (IN ORDER)   │ NOTES             │
+  -- ├──────────────────────────────┼───────────────────┤
+  -- │  USTAR HEADER (typeflag=g)   │                   │
+  -- ├──────────────────────────────┤ GLOBAL PAX HEADER │
+  -- │ GLOBAL EXTENDED HEADER DATA  │                   │
+  -- ├──────────────────────────────┼───────────────────┤
+  -- │  USTAR HEADER (typeflag=x)   │                   │
+  -- ├──────────────────────────────┤ FIRST FILE, MADE  │
+  -- │    EXTENDED HEADER DATA      │ OF TWO ENTRIES.   │
+  -- ├──────────────────────────────┤                   │
+  -- │  USTAR HEADER (typeflag=0)   │ ATTRIBUTE FOR     │
+  -- ├──────────────────────────────┤ FILE EXTENDED     │
+  -- │       DATA FOR FILE          │ WITH PAX HEADER   │
+  -- ├──────────────────────────────┼───────────────────┤
+  -- │  USTAR HEADER (typeflag=0)   │                   │
+  -- ├──────────────────────────────┤ SECOND FILE W/O   │
+  -- │       DATA FOR FILE          │ PAX HEADER        │
+  -- ├──────────────────────────────┼───────────────────┘
+  -- │   TERMINAL BLOCK OF ZEROS    │
+  -- ├──────────────────────────────┤
+  -- │   TERMINAL BLOCK OF ZEROS    │
+  -- └──────────────────────────────┘
+  --
+  -- If we discover PAX header, ignore the entry (compromised of
+  -- ustar header of type=g or x, and subsequent data block).
+  --
+  -- Ideally, header PAX header's data should be read so that,
+  -- long path, and other attributes can be supported. But for now, 
+  -- exclude so we do not have redundant entries.
+  -- 
+  -- Refer to PAX spec here:
+  --  * https://pubs.opengroup.org/onlinepubs/009695399/utilities/pax.html
+  -- 
+  -- Refer to haskell/tar issues related to here:
+  --  * Add PAX Support - https://github.com/haskell/tar/issues/1
+  --  * Long filename Support: https://github.com/haskell/tar/issues/27
+  -- 
+  if ignorePax && format == UstarFormat && (typecode == 'g' || typecode == 'x')
+  then toPartial $ readTarEntry ignorePax bs'
+  else do 
+    let entry = Entry {
+          entryTarPath     = TarPath name prefix,
+          entryContent     = case typecode of
+                    '\0' -> NormalFile      content size
+                    '0'  -> NormalFile      content size
+                    '1'  -> HardLink        (LinkTarget linkname)
+                    '2'  -> SymbolicLink    (LinkTarget linkname)
+                    _ | format == V7Format
+                          -> OtherEntryType  typecode content size
+                    '3'  -> CharacterDevice devmajor devminor
+                    '4'  -> BlockDevice     devmajor devminor
+                    '5'  -> Directory
+                    '6'  -> NamedPipe
+                    '7'  -> NormalFile      content size
+                    _    -> OtherEntryType  typecode content size,
+          entryPermissions = mode,
+          entryOwnership   = Ownership (BS.Char8.unpack uname)
+                                      (BS.Char8.unpack gname) uid gid,
+          entryTime        = mtime,
+          entryFormat      = format
+      }
+    return (Just (entry, bs'))
   where
-   header = LBS.toStrict (LBS.take 512 bs)
+    header     = headerFrom bs
+    name       = getString   0 100 header
+    mode_      = getOct    100   8 header
+    uid_       = getOct    108   8 header
+    gid_       = getOct    116   8 header
+    size_      = getOct    124  12 header
+    mtime_     = getOct    136  12 header
+    chksum_    = getOct    148   8 header
+    typecode   = getByte   156     header
+    linkname   = getString 157 100 header
+    magic      = getChars  257   8 header
+    uname      = getString 265  32 header
+    gname      = getString 297  32 header
+    devmajor_  = getOct    329   8 header
+    devminor_  = getOct    337   8 header
+    prefix     = getString 345 155 header
+    format_
+      | magic == ustarMagic = return UstarFormat
+      | magic == gnuMagic   = return GnuFormat
+      | magic == v7Magic    = return V7Format
+      | otherwise           = Error UnrecognisedTarFormat
 
-   name       = getString   0 100 header
-   mode_      = getOct    100   8 header
-   uid_       = getOct    108   8 header
-   gid_       = getOct    116   8 header
-   size_      = getOct    124  12 header
-   mtime_     = getOct    136  12 header
-   chksum_    = getOct    148   8 header
-   typecode   = getByte   156     header
-   linkname   = getString 157 100 header
-   magic      = getChars  257   8 header
-   uname      = getString 265  32 header
-   gname      = getString 297  32 header
-   devmajor_  = getOct    329   8 header
-   devminor_  = getOct    337   8 header
-   prefix     = getString 345 155 header
--- trailing   = getBytes  500  12 header
-
-   format_
-     | magic == ustarMagic = return UstarFormat
-     | magic == gnuMagic   = return GnuFormat
-     | magic == v7Magic    = return V7Format
-     | otherwise           = Error UnrecognisedTarFormat
+headerFrom :: LBS.ByteString -> BS.Char8.ByteString
+headerFrom bs = LBS.toStrict (LBS.take 512 bs)
 
 v7Magic, ustarMagic, gnuMagic :: BS.ByteString
 v7Magic    = BS.Char8.pack "\0\0\0\0\0\0\0\0"
@@ -229,6 +297,10 @@ instance Monad (Partial e) where
 #if !MIN_VERSION_base(4,13,0)
     fail          = error "fail @(Partial e)"
 #endif
+
+toPartial :: Either e a -> Partial e a
+toPartial (Left e) = Error e
+toPartial (Right a) = Ok a
 
 {-# SPECIALISE readOct :: BS.ByteString -> Maybe Int   #-}
 {-# SPECIALISE readOct :: BS.ByteString -> Maybe Int64 #-}

@@ -113,6 +113,43 @@ test-suite properties
 
   ghc-options: -fno-ignore-asserts
 
+test-suite snapshot
+  type:          exitcode-stdio-1.0
+  default-language: Haskell2010
+  build-depends: base,
+                 array,
+                 bytestring,
+                 bytestring-handle,
+                 containers,
+                 deepseq,
+                 directory >= 1.2,
+                 filepath,
+                 QuickCheck       == 2.*,
+                 tar-internal,
+                 tasty            >= 0.10 && <1.5,
+                 tasty-quickcheck >= 0.8  && <0.11,
+                 tasty-hunit,
+                 time
+
+  hs-source-dirs: test
+
+  main-is: Snapshot.hs
+
+  other-modules:
+    Codec.Archive.Tar.Tests
+    Codec.Archive.Tar.Index.Tests
+    Codec.Archive.Tar.Index.IntTrie.Tests
+    Codec.Archive.Tar.Index.StringTable.Tests
+    Codec.Archive.Tar.Types.Tests
+
+  other-extensions:
+    CPP
+    BangPatterns,
+    DeriveDataTypeable
+    ScopedTypeVariables
+
+  ghc-options: -fno-ignore-asserts
+
 benchmark bench
   type:          exitcode-stdio-1.0
   default-language: Haskell2010

@@ -1,0 +1,3 @@
+packages : ./tar.cabal
+with-compiler: ghc-8.10.7
+tests: True
