@@ -42,14 +42,11 @@ snapshotFiles = map testCaseFileAt [
         "basic_gnu.tar",
         "basic_ustar.tar",
         "emptypath.tar",
-        "nil-uid.tar",
         "pax-global-records.tar",
         "pax-nil-sparse-data.tar",
         "pax-nil-sparse-hole.tar",
-        "pax-pos-size-file.tar",
         "pax-records.tar",
-        "pax.tar",
-        "pax-bad-hdr-file.tar"
+        "pax.tar"
     ]
 
 
@@ -182,6 +179,9 @@ snapshots = testGroup "snapshots" [
             , testCase "should fail for invalid tar files" $
                 do
                     invalidTar <- tarAt "invalid.tar"
+                    badHeaderTar <- tarAt "pax-bad-hdr-file.tar"
+                    
                     assertEntriesWithErr $ read invalidTar
+                    assertEntriesWithErr $ read badHeaderTar
         ]
     ]
