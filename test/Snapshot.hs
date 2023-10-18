@@ -44,22 +44,14 @@ count = foldlEntries (\a e -> a + 1) 0
 
 snapshots = testGroup "snapshots" [
         testGroup "read'" [
-              testCase "should ignore PAX header entries" $
-                do
-                    paxRead <- read <$> basicPax
-                    paxRead' <- read' <$> basicPax
-                    assertNotEqual "" paxRead paxRead'
-                    assertEqual "" (count paxRead) (Right 20)
-                    assertEqual "" (count paxRead') (Right 10)
-
-            , testCase "should be same as read for non-pax tarballs" $
+              testCase "should be same as read for non-pax tarballs" $
                 do
                     ustarRead <- read <$> basicUstar
-                    ustarRead' <- read <$> basicUstar
+                    ustarRead' <- read' <$> basicUstar
                     assertEqual "" ustarRead ustarRead'
 
                     gnuRead <- read <$> basicGnu
-                    gnuRead' <- read <$> basicGnu
+                    gnuRead' <- read' <$> basicGnu
                     assertEqual "" gnuRead gnuRead'
 
             , testCase "should not fail fatally when empty path is provided" $

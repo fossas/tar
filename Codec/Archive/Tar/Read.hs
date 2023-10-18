@@ -39,7 +39,7 @@ data FormatError
   | TrailingJunk
   | ChecksumIncorrect
   | NotTarFormat
-  | UnrecognisedTarFormat
+  | UnrecognizedTarFormat
   | HeaderBadNumericEncoding
   deriving (Eq, Show, Typeable)
 
@@ -50,7 +50,7 @@ instance Exception FormatError where
   displayException TrailingJunk             = "tar file has trailing junk"
   displayException ChecksumIncorrect        = "tar checksum error"
   displayException NotTarFormat             = "data is not in tar format"
-  displayException UnrecognisedTarFormat    = "tar entry not in a recognised format"
+  displayException UnrecognizedTarFormat    = "tar entry not in a recognized format"
   displayException HeaderBadNumericEncoding = "tar header is malformed (bad numeric encoding)"
 
 instance NFData    FormatError where
@@ -78,7 +78,7 @@ getEntry bs
         | not (LBS.all (== 0) end)      -> Left BadTrailer
         | not (LBS.all (== 0) trailing) -> Left TrailingJunk
         | otherwise                     -> Right Nothing
-  | otherwise  = readTarEntry False bs
+  | otherwise  = readTarEntry bs
 
 -- | Like @read, but it does not throw 'BadTrailer', and 'TrailingJunk' error.
 -- 
@@ -100,13 +100,11 @@ getEntry' bs
       (end, trailing)
         | LBS.length end /= 1024                                -> Left ShortTrailer
         | (LBS.all (== 0) end && LBS.all (== 0) trailing)       -> Right Nothing
-        | otherwise                                             -> readTarEntry ignoresPaxHeader bs
-  | otherwise  = readTarEntry ignoresPaxHeader bs
-  where
-    ignoresPaxHeader = True
+        | otherwise                                             -> readTarEntry bs
+  | otherwise  = readTarEntry bs
 
-readTarEntry :: Bool -> LBS.ByteString -> Either FormatError (Maybe (Entry, LBS.ByteString))
-readTarEntry ignorePax bs = partial $ do
+readTarEntry :: LBS.ByteString -> Either FormatError (Maybe (Entry, LBS.ByteString))
+readTarEntry bs = partial $ do
   case (chksum_, format_) of
     (Ok chksum, _   ) | correctChecksum header chksum -> return ()
     (Ok _,      Ok _) -> Error ChecksumIncorrect
@@ -164,31 +162,28 @@ readTarEntry ignorePax bs = partial $ do
   --  * Add PAX Support - https://github.com/haskell/tar/issues/1
   --  * Long filename Support: https://github.com/haskell/tar/issues/27
   -- 
-  if ignorePax && format == UstarFormat && (typecode == 'g' || typecode == 'x')
-  then toPartial $ readTarEntry ignorePax bs'
-  else do 
-    let entry = Entry {
-          entryTarPath     = TarPath name prefix,
-          entryContent     = case typecode of
-                    '\0' -> NormalFile      content size
-                    '0'  -> NormalFile      content size
-                    '1'  -> HardLink        (LinkTarget linkname)
-                    '2'  -> SymbolicLink    (LinkTarget linkname)
-                    _ | format == V7Format
-                          -> OtherEntryType  typecode content size
-                    '3'  -> CharacterDevice devmajor devminor
-                    '4'  -> BlockDevice     devmajor devminor
-                    '5'  -> Directory
-                    '6'  -> NamedPipe
-                    '7'  -> NormalFile      content size
-                    _    -> OtherEntryType  typecode content size,
-          entryPermissions = mode,
-          entryOwnership   = Ownership (BS.Char8.unpack uname)
-                                      (BS.Char8.unpack gname) uid gid,
-          entryTime        = mtime,
-          entryFormat      = format
-      }
-    return (Just (entry, bs'))
+  let entry = Entry {
+        entryTarPath     = TarPath name prefix,
+        entryContent     = case typecode of
+                  '\0' -> NormalFile      content size
+                  '0'  -> NormalFile      content size
+                  '1'  -> HardLink        (LinkTarget linkname)
+                  '2'  -> SymbolicLink    (LinkTarget linkname)
+                  _ | format == V7Format
+                        -> OtherEntryType  typecode content size
+                  '3'  -> CharacterDevice devmajor devminor
+                  '4'  -> BlockDevice     devmajor devminor
+                  '5'  -> Directory
+                  '6'  -> NamedPipe
+                  '7'  -> NormalFile      content size
+                  _    -> OtherEntryType  typecode content size,
+        entryPermissions = mode,
+        entryOwnership   = Ownership (BS.Char8.unpack uname)
+                                    (BS.Char8.unpack gname) uid gid,
+        entryTime        = mtime,
+        entryFormat      = format
+    }
+  return (Just (entry, bs'))
   where
     header     = headerFrom bs
     name       = getString   0 100 header
@@ -210,7 +205,7 @@ readTarEntry ignorePax bs = partial $ do
       | magic == ustarMagic = return UstarFormat
       | magic == gnuMagic   = return GnuFormat
       | magic == v7Magic    = return V7Format
-      | otherwise           = Error UnrecognisedTarFormat
+      | otherwise           = Error UnrecognizedTarFormat
 
 headerFrom :: LBS.ByteString -> BS.Char8.ByteString
 headerFrom bs = LBS.toStrict (LBS.take 512 bs)
@@ -297,10 +292,6 @@ instance Monad (Partial e) where
 #if !MIN_VERSION_base(4,13,0)
     fail          = error "fail @(Partial e)"
 #endif
-
-toPartial :: Either e a -> Partial e a
-toPartial (Left e) = Error e
-toPartial (Right a) = Ok a
 
 {-# SPECIALISE readOct :: BS.ByteString -> Maybe Int   #-}
 {-# SPECIALISE readOct :: BS.ByteString -> Maybe Int64 #-}
