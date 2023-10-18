@@ -95,6 +95,12 @@ read' = unfoldEntries getEntry'
 
 getEntry' :: LBS.ByteString -> Either FormatError (Maybe (Entry, LBS.ByteString))
 getEntry' bs
+  -- - 
+  -- Although, the documentation says, archive is ended with
+  -- two 512 bytes block of zero. But in practice, this is not
+  -- the case. Consider testdata/nil-uid.tar
+  -- -
+  | BS.length (LBS.toStrict bs) == 0 = Right Nothing 
   | BS.length (headerFrom bs) < 512 = Left TruncatedArchive
   | LBS.head bs == 0 = case LBS.splitAt 1024 bs of
       (end, trailing)
