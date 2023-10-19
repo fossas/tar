@@ -1,5 +1,8 @@
 See also http://pvp.haskell.org/faq
 
+0.7.0.0
+  * Updates `hReadEntryHeader` to use `read'`, so that empty offset are aptly read.
+
 0.6.0.0 *TODO*
 
   * Add offending path as new field to `TarBombError` constructor
