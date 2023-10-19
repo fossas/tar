@@ -396,7 +396,7 @@ hReadEntryHeader :: Handle -> TarEntryOffset -> IO Entry
 hReadEntryHeader hnd blockOff = do
     hSeekEntryOffset hnd blockOff
     header <- LBS.hGet hnd 512
-    case Tar.read header of
+    case Tar.read' header of
       Tar.Next entry _ -> return entry
       Tar.Fail e       -> throwIO e
       Tar.Done         -> fail "hReadEntryHeader: impossible"
